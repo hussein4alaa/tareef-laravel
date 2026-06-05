@@ -16,6 +16,7 @@ use Tareef\Laravel\Exceptions\PersonNotFoundException;
 use Tareef\Laravel\Exceptions\QuotaExceededException;
 use Tareef\Laravel\Exceptions\ServiceUnavailableException;
 use Tareef\Laravel\Exceptions\TareefException;
+use Tareef\Laravel\Exceptions\ValidationException;
 use Tareef\Laravel\Resources\Person;
 use Tareef\Laravel\Resources\VerifyResult;
 
@@ -188,9 +189,13 @@ class TareefClient
         $data = $this->decode($res);
 
         $status = $data['status'] ?? null;
+        $http = $res->status();
 
-        // Auth / quota / connectivity → exceptions.
-        if (in_array($res->status(), [401, 403, 429, 502, 503, 504], true)) {
+        // Real errors → exceptions. 422 / 400 mean the request itself was
+        // malformed (most commonly: the `file` field didn't reach the API
+        // because PHP upload_max_filesize / post_max_size dropped it on
+        // the way out). 401 / 403 / 429 / 5xx are handled in throwForStatus.
+        if ($http >= 400 && $http !== 404) {
             $this->throwForStatus($res, $data);
         }
 
@@ -213,19 +218,19 @@ class TareefClient
                 $req = $req->withQueryParameters($query);
             }
 
+            $options = [];
+
             if ($multipart) {
-                // Attach each part individually so UploadedFile / file
-                // resources are streamed without buffering in PHP.
-                foreach ($multipart as $part) {
-                    $req = $req->attach(
-                        $part['name'],
-                        $part['contents'],
-                        $part['filename'] ?? null,
-                    );
-                }
+                // Pass parts through send() options rather than ->attach() +
+                // bare ->send(): PendingRequest::parseHttpOptions only merges
+                // $pendingFiles when $options[$bodyFormat] is set, so calling
+                // send() with no options silently drops every attachment and
+                // the API sees an empty body ("The file field is required.").
+                $req = $req->asMultipart();
+                $options['multipart'] = $multipart;
             }
 
-            return $req->send($method, $this->url($path));
+            return $req->send($method, $this->url($path), $options);
         } catch (ConnectionException $e) {
             throw new ServiceUnavailableException(
                 message: 'Could not reach Tareef at '.$this->baseUrl.'.',
@@ -354,6 +359,21 @@ class TareefClient
 
         if ($status === 'not_found') {
             throw new PersonNotFoundException($data['uuid'] ?? '');
+        }
+
+        // Laravel validation errors: 422 with {"message": "...", "errors": {...}}.
+        // The most common cause is the `file` field never reaching the API,
+        // which usually means PHP's upload_max_filesize / post_max_size on
+        // the SENDING side silently dropped a large image. Surface it as a
+        // typed exception so the caller doesn't have to inspect status codes.
+        if (in_array($http, [400, 422], true)) {
+            throw new ValidationException(
+                message: $message ?: 'Tareef rejected the request as invalid (HTTP '.$http.').',
+                errors: (array) ($data['errors'] ?? []),
+                httpStatus: $http,
+                apiStatus: $status,
+                context: $data,
+            );
         }
 
         // Then HTTP status codes.
