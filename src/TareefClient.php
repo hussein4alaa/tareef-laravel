@@ -1,0 +1,389 @@
+<?php
+
+namespace Tareef\Laravel;
+
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Response;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Collection;
+use SplFileInfo;
+use Tareef\Laravel\Exceptions\AuthenticationException;
+use Tareef\Laravel\Exceptions\FaceAlreadyExistsException;
+use Tareef\Laravel\Exceptions\NoFaceDetectedException;
+use Tareef\Laravel\Exceptions\PersonNotFoundException;
+use Tareef\Laravel\Exceptions\QuotaExceededException;
+use Tareef\Laravel\Exceptions\ServiceUnavailableException;
+use Tareef\Laravel\Exceptions\TareefException;
+use Tareef\Laravel\Resources\Person;
+use Tareef\Laravel\Resources\VerifyResult;
+
+/**
+ * Tareef HTTP client.
+ *
+ * Resolve through the container (`app(TareefClient::class)`) or use the
+ * `Tareef` facade — both return the same singleton instance.
+ *
+ * Every public method either returns a typed resource or throws a
+ * Tareef\Laravel\Exceptions\TareefException subclass. There is no
+ * "string-status" return path — once you have a result, it's valid.
+ */
+class TareefClient
+{
+    public function __construct(
+        protected HttpFactory $http,
+        protected string $apiKey,
+        protected string $baseUrl,
+        protected int $timeout = 30,
+        protected int $retries = 2,
+        protected bool $throwOnQuota = true,
+    ) {}
+
+    // ── Health ──────────────────────────────────────────────────────────────
+
+    /**
+     * Is the Tareef API reachable and our API key accepted?
+     * Returns true on a 200, false on anything else (no exception).
+     */
+    public function health(): bool
+    {
+        try {
+            return $this->request()->get($this->url('/health'))->successful();
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    // ── People ──────────────────────────────────────────────────────────────
+
+    /**
+     * Enroll a new person with one or more reference photos.
+     *
+     * @param  array<UploadedFile|SplFileInfo|string>  $images  files or absolute paths
+     *
+     * @throws FaceAlreadyExistsException  if the face is already in the library
+     * @throws NoFaceDetectedException     if none of the images contain a face
+     * @throws AuthenticationException     401
+     * @throws QuotaExceededException      429
+     * @throws ServiceUnavailableException 5xx / connect failure
+     * @throws TareefException             any other API error
+     */
+    public function register(string $name, array $images, ?string $phone = null): Person
+    {
+        $body = $this->buildMultipart(['name' => $name, 'phone' => $phone ?? ''], $images);
+
+        $res = $this->send('POST', '/api/v1/people', $body);
+        $data = $this->decode($res);
+
+        if (! ($data['success'] ?? false)) {
+            $this->throwForStatus($res, $data);
+        }
+
+        return Person::fromArray($data + ['name' => $name, 'phone' => $phone], $this);
+    }
+
+    /**
+     * Add more reference photos to an existing person.
+     */
+    public function addImagesTo(string $uuid, array $images): Person
+    {
+        $body = $this->buildMultipart([], $images);
+
+        $res = $this->send('POST', "/api/v1/people/{$uuid}/images", $body);
+        $data = $this->decode($res);
+
+        if (! ($data['success'] ?? false)) {
+            $this->throwForStatus($res, $data);
+        }
+
+        return $this->findOrFail($uuid);
+    }
+
+    /**
+     * Look up a person by UUID. Returns null if not found.
+     */
+    public function find(string $uuid): ?Person
+    {
+        try {
+            return $this->findOrFail($uuid);
+        } catch (PersonNotFoundException) {
+            return null;
+        }
+    }
+
+    /**
+     * Look up a person by UUID. Throws PersonNotFoundException if not found.
+     */
+    public function findOrFail(string $uuid): Person
+    {
+        $res = $this->send('GET', "/api/v1/people/{$uuid}");
+
+        if ($res->status() === 404) {
+            throw new PersonNotFoundException($uuid);
+        }
+
+        $data = $this->decode($res);
+        if (! ($data['success'] ?? false)) {
+            $this->throwForStatus($res, $data);
+        }
+
+        return Person::fromArray($data, $this);
+    }
+
+    /**
+     * List enrolled people (most recent first). Default limit is 100;
+     * the API maxes out at whatever the dashboard exposes.
+     *
+     * @return Collection<int, Person>
+     */
+    public function list(int $limit = 100): Collection
+    {
+        $res = $this->send('GET', '/api/v1/people', query: ['limit' => $limit]);
+        $data = $this->decode($res);
+
+        if (! ($data['success'] ?? false)) {
+            $this->throwForStatus($res, $data);
+        }
+
+        return collect($data['people'] ?? [])
+            ->map(fn (array $row) => Person::fromArray($row, $this));
+    }
+
+    /**
+     * Delete a person from the library. Returns true on success.
+     */
+    public function delete(string $uuid): bool
+    {
+        $res = $this->send('DELETE', "/api/v1/people/{$uuid}");
+
+        if ($res->status() === 404) {
+            throw new PersonNotFoundException($uuid);
+        }
+
+        $data = $this->decode($res);
+        if (! ($data['success'] ?? false)) {
+            $this->throwForStatus($res, $data);
+        }
+
+        return true;
+    }
+
+    // ── Verify ──────────────────────────────────────────────────────────────
+
+    /**
+     * Verify a face against the enrolled library.
+     *
+     * Returns a VerifyResult either way. `matched` is true on a hit and
+     * false on a no-match — neither is an exception. Real errors (auth,
+     * quota, no face in the image) do throw.
+     *
+     * @param  UploadedFile|SplFileInfo|string  $image  file or absolute path
+     */
+    public function verify(UploadedFile|SplFileInfo|string $image): VerifyResult
+    {
+        $body = $this->buildMultipart([], [$image]);
+
+        $res = $this->send('POST', '/api/v1/verify', $body);
+        $data = $this->decode($res);
+
+        $status = $data['status'] ?? null;
+
+        // Auth / quota / connectivity → exceptions.
+        if (in_array($res->status(), [401, 403, 429, 502, 503, 504], true)) {
+            $this->throwForStatus($res, $data);
+        }
+
+        // no_face is a real error, not a "no match" result — surface it.
+        if ($status === 'no_face') {
+            throw new NoFaceDetectedException($data['message'] ?? 'No face could be detected in the supplied image.');
+        }
+
+        return VerifyResult::fromArray($data);
+    }
+
+    // ── Internals ───────────────────────────────────────────────────────────
+
+    protected function send(string $method, string $path, array $multipart = [], array $query = []): Response
+    {
+        try {
+            $req = $this->request();
+
+            if ($query) {
+                $req = $req->withQueryParameters($query);
+            }
+
+            if ($multipart) {
+                // Attach each part individually so UploadedFile / file
+                // resources are streamed without buffering in PHP.
+                foreach ($multipart as $part) {
+                    $req = $req->attach(
+                        $part['name'],
+                        $part['contents'],
+                        $part['filename'] ?? null,
+                    );
+                }
+            }
+
+            return $req->send($method, $this->url($path));
+        } catch (ConnectionException $e) {
+            throw new ServiceUnavailableException(
+                message: 'Could not reach Tareef at '.$this->baseUrl.'.',
+                context: ['path' => $path],
+                previous: $e,
+            );
+        }
+    }
+
+    protected function request(): PendingRequest
+    {
+        $req = $this->http
+            ->withToken($this->apiKey)
+            ->withHeaders([
+                'Accept' => 'application/json',
+                'User-Agent' => 'tareef-laravel/'.self::version(),
+            ])
+            ->timeout($this->timeout);
+
+        // Retry transient transport failures only — 4xx/5xx HTTP responses
+        // are deterministic and shouldn't be retried. `throw: false` is
+        // critical: without it, Laravel's retry helper calls Response::throw()
+        // after the final attempt for any non-2xx status, which would
+        // bypass our own exception-mapping logic in throwForStatus().
+        if ($this->retries > 0) {
+            $req = $req->retry(
+                $this->retries,
+                250,
+                fn (\Throwable $e) => $e instanceof ConnectionException,
+                throw: false,
+            );
+        }
+
+        return $req;
+    }
+
+    protected function url(string $path): string
+    {
+        return rtrim($this->baseUrl, '/').'/'.ltrim($path, '/');
+    }
+
+    protected function decode(Response $res): array
+    {
+        $body = (array) $res->json();
+
+        return $body;
+    }
+
+    /**
+     * Build the multipart parts array that Http::send() expects.
+     *
+     * - `file` for the first image (legacy single-file mode the API accepts)
+     * - `files[]` repeated for each additional image
+     */
+    protected function buildMultipart(array $fields, array $images): array
+    {
+        $parts = [];
+
+        foreach ($fields as $name => $value) {
+            if ($value === null) {
+                continue;
+            }
+            $parts[] = ['name' => $name, 'contents' => (string) $value];
+        }
+
+        $images = array_values(array_filter($images));
+
+        foreach ($images as $i => $image) {
+            [$stream, $filename] = $this->normaliseImage($image);
+            $parts[] = [
+                'name' => $i === 0 ? 'file' : 'files[]',
+                'contents' => $stream,
+                'filename' => $filename,
+            ];
+        }
+
+        return $parts;
+    }
+
+    /**
+     * Turn anything file-like (UploadedFile, SplFileInfo, string path) into
+     * [resource, filename] for the multipart builder.
+     *
+     * @return array{0: resource, 1: string}
+     */
+    protected function normaliseImage(UploadedFile|SplFileInfo|string $image): array
+    {
+        if (is_string($image)) {
+            if (! is_file($image)) {
+                throw new TareefException("Image path [{$image}] does not exist.");
+            }
+            return [fopen($image, 'rb'), basename($image)];
+        }
+
+        if ($image instanceof UploadedFile) {
+            return [fopen($image->getRealPath(), 'rb'), $image->getClientOriginalName()];
+        }
+
+        // SplFileInfo (and subclasses like Illuminate\Http\File)
+        return [fopen($image->getRealPath() ?: $image->getPathname(), 'rb'), $image->getFilename()];
+    }
+
+    /**
+     * Translate an HTTP status + API payload into the most specific
+     * exception subclass we have.
+     */
+    protected function throwForStatus(Response $res, array $data): never
+    {
+        $status = $data['status'] ?? null;
+        $message = $data['message'] ?? null;
+        $http = $res->status();
+
+        // Tareef-specific signals first (they often arrive on 422, not 4xx).
+        if ($status === 'face_exists' && ! empty($data['uuid'])) {
+            throw new FaceAlreadyExistsException(
+                existingUuid: (string) $data['uuid'],
+                score: isset($data['score']) ? (float) $data['score'] : null,
+                samples: isset($data['samples']) ? (int) $data['samples'] : null,
+                message: $message ?: '',
+            );
+        }
+
+        if ($status === 'no_face') {
+            throw new NoFaceDetectedException($message ?: 'No face could be detected.');
+        }
+
+        if ($status === 'not_found') {
+            throw new PersonNotFoundException($data['uuid'] ?? '');
+        }
+
+        // Then HTTP status codes.
+        match (true) {
+            $http === 401 => throw new AuthenticationException(
+                message: $message ?: 'Tareef rejected the API key (401). Check TAREEF_API_KEY.',
+                httpStatus: 401,
+                apiStatus: $status,
+            ),
+            $http === 429 && $this->throwOnQuota => throw new QuotaExceededException(
+                message: $message ?: 'Your Tareef plan quota is exhausted.',
+                httpStatus: 429,
+                apiStatus: $status,
+            ),
+            $http >= 500 => throw new ServiceUnavailableException(
+                message: $message ?: "Tareef returned HTTP {$http}.",
+                httpStatus: $http,
+                apiStatus: $status,
+            ),
+            default => throw new TareefException(
+                message: $message ?: "Tareef request failed with HTTP {$http}.",
+                httpStatus: $http,
+                apiStatus: $status,
+                context: $data,
+            ),
+        };
+    }
+
+    public static function version(): string
+    {
+        return '1.0.0';
+    }
+}
