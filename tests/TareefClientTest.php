@@ -12,6 +12,7 @@ use Tareef\Laravel\Exceptions\NoFaceDetectedException;
 use Tareef\Laravel\Exceptions\PersonNotFoundException;
 use Tareef\Laravel\Exceptions\QuotaExceededException;
 use Tareef\Laravel\Facades\Tareef;
+use Tareef\Laravel\Resources\CompareResult;
 use Tareef\Laravel\Resources\Person;
 use Tareef\Laravel\Resources\VerifyResult;
 use Tareef\Laravel\TareefServiceProvider;
@@ -138,6 +139,41 @@ class TareefClientTest extends TestCase
         $this->assertFalse($result->matched);
         $this->assertSame('not_found', $result->status);
         $this->assertNull($result->uuid);
+    }
+
+    public function test_compare_returns_result(): void
+    {
+        Http::fake([
+            'https://tareef.test/api/v1/compare' => Http::response([
+                'success' => true, 'match' => true,
+                'distance' => 0.21, 'similarity' => 0.79, 'threshold' => 0.38,
+            ], 200),
+        ]);
+
+        $result = Tareef::compare(
+            UploadedFile::fake()->image('selfie.jpg'),
+            UploadedFile::fake()->image('id.jpg'),
+        );
+
+        $this->assertInstanceOf(CompareResult::class, $result);
+        $this->assertTrue($result->match);
+        $this->assertSame(0.79, $result->similarity);
+        $this->assertSame(0.21, $result->distance);
+    }
+
+    public function test_compare_throws_no_face(): void
+    {
+        Http::fake([
+            'https://tareef.test/api/v1/compare' => Http::response([
+                'success' => false, 'status' => 'no_face',
+            ], 200),
+        ]);
+
+        $this->expectException(NoFaceDetectedException::class);
+        Tareef::compare(
+            UploadedFile::fake()->image('a.jpg'),
+            UploadedFile::fake()->image('b.jpg'),
+        );
     }
 
     public function test_find_returns_null_on_404(): void

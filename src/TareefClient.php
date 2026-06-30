@@ -17,6 +17,7 @@ use Tareef\Laravel\Exceptions\QuotaExceededException;
 use Tareef\Laravel\Exceptions\ServiceUnavailableException;
 use Tareef\Laravel\Exceptions\TareefException;
 use Tareef\Laravel\Exceptions\ValidationException;
+use Tareef\Laravel\Resources\CompareResult;
 use Tareef\Laravel\Resources\Person;
 use Tareef\Laravel\Resources\VerifyResult;
 
@@ -205,6 +206,45 @@ class TareefClient
         }
 
         return VerifyResult::fromArray($data);
+    }
+
+    // ── Compare (1:1) ─────────────────────────────────────────────────────────
+
+    /**
+     * Compare two faces directly and report how similar they are. Unlike
+     * verify() this touches no library — ideal for KYC ("does this selfie
+     * match this ID photo?"). A no-match is NOT an exception; `match` is just
+     * false. Real errors (auth, quota, no face) do throw.
+     *
+     * @param  UploadedFile|SplFileInfo|string  $imageA
+     * @param  UploadedFile|SplFileInfo|string  $imageB
+     */
+    public function compare(
+        UploadedFile|SplFileInfo|string $imageA,
+        UploadedFile|SplFileInfo|string $imageB,
+    ): CompareResult {
+        [$streamA, $nameA] = $this->normaliseImage($imageA);
+        [$streamB, $nameB] = $this->normaliseImage($imageB);
+
+        $body = [
+            ['name' => 'type', 'contents' => 'file'],
+            ['name' => 'file1', 'contents' => $streamA, 'filename' => $nameA],
+            ['name' => 'file2', 'contents' => $streamB, 'filename' => $nameB],
+        ];
+
+        $res = $this->send('POST', '/api/v1/compare', $body);
+        $data = $this->decode($res);
+        $http = $res->status();
+
+        if ($http >= 400 && $http !== 404) {
+            $this->throwForStatus($res, $data);
+        }
+
+        if (($data['status'] ?? null) === 'no_face') {
+            throw new NoFaceDetectedException($data['message'] ?? 'No face could be detected in one or both images.');
+        }
+
+        return CompareResult::fromArray($data);
     }
 
     // ── Internals ───────────────────────────────────────────────────────────

@@ -78,6 +78,20 @@ if ($result->matched) {
 return view('door.unknown');
 ```
 
+### Compare two faces (1:1)
+
+Measure how similar two images are without enrolling anyone — ideal for KYC
+("does this selfie match this ID photo?"). A no-match is **not** an exception.
+
+```php
+$result = Tareef::compare($request->file('selfie'), $request->file('id_photo'));
+
+if ($result->match) {
+    return 'Same person — '.round($result->similarity * 100).'% similar';
+}
+// $result->distance (lower = closer), $result->similarity (1.0 = identical)
+```
+
 ### Add more reference photos
 
 ```php
@@ -150,7 +164,7 @@ try {
 }
 ```
 
-`Tareef::verify()` is different: a no-match is **not** an exception — it returns a `VerifyResult` with `matched=false`. Only auth, quota, "no face in the image", and network errors throw.
+`Tareef::verify()` and `Tareef::compare()` are different: a no-match is **not** an exception — they return a result object with `matched`/`match` set to `false`. Only auth, quota, "no face in the image", and network errors throw.
 
 ## API reference
 
@@ -158,6 +172,7 @@ try {
 |------|---------|-------------|
 | `Tareef::register($name, $images, $phone?)` | `Person` | duplicate face, no face, auth, quota |
 | `Tareef::verify($image)` | `VerifyResult` | no face, auth, quota, network |
+| `Tareef::compare($imageA, $imageB)` | `CompareResult` | no face, auth, quota, network |
 | `Tareef::find($uuid)` | `?Person` (null = not found) | auth |
 | `Tareef::findOrFail($uuid)` | `Person` | not found, auth |
 | `Tareef::list($limit = 100)` | `Collection<Person>` | auth |
@@ -190,6 +205,16 @@ $result->score;         // ?float  (lower = closer; <0.35 = confident match)
 $result->samples;       // ?int    (how many reference photos contributed)
 $result->status;        // 'ok' | 'not_found'
 $result->message;       // ?string
+```
+
+### `CompareResult`
+
+```php
+$result->match;         // bool   — same person? (uses the app's strictness)
+$result->distance;      // ?float  (cosine distance; lower = closer)
+$result->similarity;    // ?float  (1 − distance; 1.0 = identical)
+$result->threshold;     // ?float  (the cutoff the decision used)
+$result->status;        // 'ok'
 ```
 
 ## Configuration
