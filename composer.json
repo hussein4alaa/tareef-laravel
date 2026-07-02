@@ -2,11 +2,11 @@
     "name": "tareef/laravel",
     "description": "Official Laravel SDK for the Tareef face-recognition API — register, verify, and manage people in one line of code.",
     "keywords": ["tareef", "face-recognition", "laravel", "biometrics", "verification", "api", "sdk"],
-    "homepage": "https://tareef.g4t.io",
+    "homepage": "https://tareef.io",
     "license": "MIT",
     "type": "library",
     "authors": [
-        { "name": "Tareef", "homepage": "https://tareef.g4t.io" }
+        { "name": "Tareef", "homepage": "https://tareef.io" }
     ],
     "require": {
         "php": "^8.2",

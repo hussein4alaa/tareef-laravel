@@ -24,7 +24,7 @@ return [
     | dashboard instance.
     |
     */
-    'base_url' => env('TAREEF_BASE_URL', 'https://tareef.g4t.io'),
+    'base_url' => env('TAREEF_BASE_URL', 'https://tareef.io'),
 
     /*
     |---------------------------------------------------------------------------

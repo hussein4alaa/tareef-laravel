@@ -17,7 +17,7 @@ class TareefServiceProvider extends ServiceProvider
             return new TareefClient(
                 http: $app->make(HttpFactory::class),
                 apiKey: (string) ($cfg['api_key'] ?? ''),
-                baseUrl: (string) ($cfg['base_url'] ?? 'https://tareef.g4t.io'),
+                baseUrl: (string) ($cfg['base_url'] ?? 'https://tareef.io'),
                 timeout: (int) ($cfg['timeout'] ?? 30),
                 retries: (int) ($cfg['retries'] ?? 2),
                 throwOnQuota: (bool) ($cfg['throw_on_quota'] ?? true),

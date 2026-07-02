@@ -1,12 +1,12 @@
 <p align="center">
-  <a href="https://tareef.g4t.io">
+  <a href="https://tareef.io">
     <img src="banner.png" alt="Tareef — Face recognition API" width="100%">
   </a>
 </p>
 
 # Tareef for Laravel
 
-The official Laravel SDK for [Tareef](https://tareef.g4t.io) — register a person, verify a face, manage your library, in one line of code.
+The official Laravel SDK for [Tareef](https://tareef.io) — register a person, verify a face, manage your library, in one line of code.
 
 ```php
 use Tareef\Laravel\Facades\Tareef;
@@ -22,7 +22,7 @@ if ($result->matched) {
 
 - PHP 8.2+
 - Laravel 10, 11, 12, or 13
-- A Tareef account ([sign up free](https://tareef.g4t.io/register))
+- A Tareef account ([sign up free](https://tareef.io/register))
 
 ## Install
 
@@ -224,7 +224,7 @@ $result->status;        // 'ok'
 | Key | Env var | Default | Notes |
 |-----|---------|---------|-------|
 | `api_key` | `TAREEF_API_KEY` | — | **Required.** Bearer token, treat like a password. |
-| `base_url` | `TAREEF_BASE_URL` | `https://tareef.g4t.io` | Override for self-hosted Tareef. |
+| `base_url` | `TAREEF_BASE_URL` | `https://tareef.io` | Override for self-hosted Tareef. |
 | `timeout` | `TAREEF_TIMEOUT` | `30` | Per-request, seconds. |
 | `retries` | `TAREEF_RETRIES` | `2` | Transient-failure retries before throwing. |
 | `throw_on_quota` | `TAREEF_THROW_ON_QUOTA` | `true` | Set to `false` to receive failure results instead of `QuotaExceededException`. |
@@ -269,8 +269,8 @@ MIT. See [LICENSE](LICENSE).
 
 ## Links
 
-- Tareef dashboard — https://tareef.g4t.io
-- API reference  — https://tareef.g4t.io/docs
-- Status         — https://tareef.g4t.io/status
+- Tareef dashboard — https://tareef.io
+- API reference  — https://tareef.io/docs
+- Status         — https://tareef.io/status
 - Support        — info@g4t.online
 # tareef-laravel
