@@ -51,7 +51,7 @@ class TareefClient
     public function health(): bool
     {
         try {
-            return $this->request()->get($this->url('/health'))->successful();
+            return $this->send('GET', '/health')->successful();
         } catch (\Throwable) {
             return false;
         }
@@ -251,60 +251,59 @@ class TareefClient
 
     protected function send(string $method, string $path, array $multipart = [], array $query = []): Response
     {
-        try {
-            $req = $this->request();
+        $req = $this->request();
+        $options = [];
 
-            if ($query) {
-                $req = $req->withQueryParameters($query);
+        if ($query) {
+            // Guzzle option rather than withQueryParameters(), which only
+            // exists on Laravel >= 10.20.
+            $options['query'] = $query;
+        }
+
+        if ($multipart) {
+            // Pass parts through send() options rather than ->attach() +
+            // bare ->send(): PendingRequest::parseHttpOptions only merges
+            // $pendingFiles when $options[$bodyFormat] is set, so calling
+            // send() with no options silently drops every attachment and
+            // the API sees an empty body ("The file field is required.").
+            $req = $req->asMultipart();
+            $options['multipart'] = $multipart;
+        }
+
+        // Retry transient transport failures only — 4xx/5xx HTTP responses
+        // are deterministic and shouldn't be retried. Hand-rolled instead of
+        // PendingRequest::retry(): opting out of its post-retry
+        // Response::throw() (which would bypass our exception mapping in
+        // throwForStatus()) needs the `throw:` parameter, which early
+        // Laravel 9 releases don't have.
+        $attempt = 0;
+
+        while (true) {
+            try {
+                return $req->send($method, $this->url($path), $options);
+            } catch (ConnectionException $e) {
+                if (++$attempt > $this->retries) {
+                    throw new ServiceUnavailableException(
+                        message: 'Could not reach Tareef at '.$this->baseUrl.'.',
+                        context: ['path' => $path],
+                        previous: $e,
+                    );
+                }
+
+                usleep(250_000);
             }
-
-            $options = [];
-
-            if ($multipart) {
-                // Pass parts through send() options rather than ->attach() +
-                // bare ->send(): PendingRequest::parseHttpOptions only merges
-                // $pendingFiles when $options[$bodyFormat] is set, so calling
-                // send() with no options silently drops every attachment and
-                // the API sees an empty body ("The file field is required.").
-                $req = $req->asMultipart();
-                $options['multipart'] = $multipart;
-            }
-
-            return $req->send($method, $this->url($path), $options);
-        } catch (ConnectionException $e) {
-            throw new ServiceUnavailableException(
-                message: 'Could not reach Tareef at '.$this->baseUrl.'.',
-                context: ['path' => $path],
-                previous: $e,
-            );
         }
     }
 
     protected function request(): PendingRequest
     {
-        $req = $this->http
+        return $this->http
             ->withToken($this->apiKey)
             ->withHeaders([
                 'Accept' => 'application/json',
                 'User-Agent' => 'tareef-laravel/'.self::version(),
             ])
             ->timeout($this->timeout);
-
-        // Retry transient transport failures only — 4xx/5xx HTTP responses
-        // are deterministic and shouldn't be retried. `throw: false` is
-        // critical: without it, Laravel's retry helper calls Response::throw()
-        // after the final attempt for any non-2xx status, which would
-        // bypass our own exception-mapping logic in throwForStatus().
-        if ($this->retries > 0) {
-            $req = $req->retry(
-                $this->retries,
-                250,
-                fn (\Throwable $e) => $e instanceof ConnectionException,
-                throw: false,
-            );
-        }
-
-        return $req;
     }
 
     protected function url(string $path): string
