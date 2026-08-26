@@ -65,6 +65,18 @@ class Person
     }
 
     /**
+     * Check a photo against THIS person's reference images only (1:1).
+     *
+     *     if ($person->verify($request->file('selfie'))->matched) { … }
+     *
+     * @param  \Illuminate\Http\UploadedFile|\SplFileInfo|string  $image
+     */
+    public function verify(\Illuminate\Http\UploadedFile|\SplFileInfo|string $image): VerifyResult
+    {
+        return $this->requireClient()->verify($image, $this->uuid);
+    }
+
+    /**
      * Remove this person from the library. Returns true on success.
      */
     public function delete(): bool

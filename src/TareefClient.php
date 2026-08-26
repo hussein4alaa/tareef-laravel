@@ -174,23 +174,49 @@ class TareefClient
     // ── Verify ──────────────────────────────────────────────────────────────
 
     /**
-     * Verify a face against the enrolled library.
+     * Verify a face — against the whole library (1:N), or against ONE
+     * known person (1:1) when you pass their UUID.
+     *
+     * Pass `$personUuid` when you already know who the photo is meant to
+     * be ("is this really user #42?"). The image is then scored only
+     * against that person's own reference photos, which is both faster
+     * and more forgiving: a query that resembles ONE of their photos is
+     * enough, so glasses on/off and lighting changes stop mattering as
+     * much as they do in a library-wide search.
      *
      * Returns a VerifyResult either way. `matched` is true on a hit and
      * false on a no-match — neither is an exception. Real errors (auth,
-     * quota, no face in the image) do throw.
+     * quota, no face in the image, unknown person) do throw.
      *
      * @param  UploadedFile|SplFileInfo|string  $image  file or absolute path
+     * @param  string|null  $personUuid  verify against this person only
+     *
+     * @throws PersonNotFoundException     $personUuid isn't in your library
+     * @throws NoFaceDetectedException     no face in the supplied image
+     * @throws AuthenticationException     401
+     * @throws QuotaExceededException      429
+     * @throws ServiceUnavailableException 5xx / connect failure
      */
-    public function verify(UploadedFile|SplFileInfo|string $image): VerifyResult
-    {
-        $body = $this->buildMultipart([], [$image]);
+    public function verify(
+        UploadedFile|SplFileInfo|string $image,
+        ?string $personUuid = null,
+    ): VerifyResult {
+        $personUuid = ($personUuid !== null && $personUuid !== '') ? $personUuid : null;
+
+        // buildMultipart drops null fields, so this is a no-op for 1:N.
+        $body = $this->buildMultipart(['person_uuid' => $personUuid], [$image]);
 
         $res = $this->send('POST', '/api/v1/verify', $body);
         $data = $this->decode($res);
 
         $status = $data['status'] ?? null;
         $http = $res->status();
+
+        // The only 404 verify can produce is "you named a person who isn't
+        // in this application" — a caller mistake, not a no-match.
+        if ($http === 404 && $status === 'person_not_found') {
+            throw new PersonNotFoundException((string) $personUuid);
+        }
 
         // Real errors → exceptions. 422 / 400 mean the request itself was
         // malformed (most commonly: the `file` field didn't reach the API
@@ -443,6 +469,6 @@ class TareefClient
 
     public static function version(): string
     {
-        return '1.0.0';
+        return '1.1.0';
     }
 }

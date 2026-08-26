@@ -15,6 +15,12 @@ namespace Tareef\Laravel\Resources;
  * Score semantics: lower = closer. The upstream rejection threshold sits
  * around 0.50; anything <0.35 is a confident match. The `score` is null
  * when there was no match.
+ *
+ * When the call named a person (1:1), `personUuid` echoes who was checked
+ * and `status` narrows the miss:
+ *
+ *     not_identical → a face was read, but it isn't them
+ *     no_images     → that person has no reference photos yet
  */
 class VerifyResult
 {
@@ -26,7 +32,15 @@ class VerifyResult
         public readonly ?int $samples = null,
         public readonly string $status = 'not_found',
         public readonly ?string $message = null,
+        public readonly ?string $personUuid = null,
+        public readonly bool $lowQualityImage = false,
     ) {}
+
+    /** Was this a 1:1 check against a named person, rather than a library search? */
+    public function wasScopedToPerson(): bool
+    {
+        return $this->personUuid !== null;
+    }
 
     public static function fromArray(array $data): self
     {
@@ -40,6 +54,8 @@ class VerifyResult
             samples: isset($data['samples']) ? (int) $data['samples'] : null,
             status: (string) ($data['status'] ?? ($success ? 'ok' : 'not_found')),
             message: $data['message'] ?? null,
+            personUuid: $data['person_uuid'] ?? null,
+            lowQualityImage: (bool) ($data['low_quality_image'] ?? false),
         );
     }
 
@@ -53,6 +69,8 @@ class VerifyResult
             'samples' => $this->samples,
             'status'  => $this->status,
             'message' => $this->message,
+            'person_uuid' => $this->personUuid,
+            'low_quality_image' => $this->lowQualityImage,
         ];
     }
 }

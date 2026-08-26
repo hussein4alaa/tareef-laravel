@@ -141,6 +141,69 @@ class TareefClientTest extends TestCase
         $this->assertNull($result->uuid);
     }
 
+    public function test_verify_against_one_person_sends_the_uuid(): void
+    {
+        Http::fake([
+            'https://tareef.test/api/v1/verify' => Http::response([
+                'success' => true, 'status' => 'ok', 'uuid' => 'uuid-1',
+                'name' => 'Jane', 'score' => 0.18, 'samples' => 1,
+                'person_uuid' => 'uuid-1',
+            ], 200),
+        ]);
+
+        $result = Tareef::verify(UploadedFile::fake()->image('selfie.jpg'), 'uuid-1');
+
+        $this->assertTrue($result->matched);
+        $this->assertSame('uuid-1', $result->personUuid);
+        $this->assertTrue($result->wasScopedToPerson());
+
+        Http::assertSent(fn ($request) => str_contains($request->body(), 'name="person_uuid"')
+            && str_contains($request->body(), 'uuid-1'));
+    }
+
+    public function test_verify_without_a_person_omits_the_uuid(): void
+    {
+        Http::fake([
+            'https://tareef.test/api/v1/verify' => Http::response([
+                'success' => true, 'status' => 'ok', 'uuid' => 'uuid-1', 'name' => 'Jane',
+            ], 200),
+        ]);
+
+        $result = Tareef::verify(UploadedFile::fake()->image('selfie.jpg'));
+
+        $this->assertFalse($result->wasScopedToPerson());
+        Http::assertSent(fn ($request) => ! str_contains($request->body(), 'name="person_uuid"'));
+    }
+
+    public function test_verify_against_one_person_not_identical_does_not_throw(): void
+    {
+        Http::fake([
+            'https://tareef.test/api/v1/verify' => Http::response([
+                'success' => false, 'status' => 'not_identical',
+                'person_uuid' => 'uuid-1', 'low_quality_image' => true,
+            ], 200),
+        ]);
+
+        $result = Tareef::verify(UploadedFile::fake()->image('selfie.jpg'), 'uuid-1');
+
+        $this->assertFalse($result->matched);
+        $this->assertSame('not_identical', $result->status);
+        $this->assertTrue($result->lowQualityImage);
+    }
+
+    public function test_verify_against_an_unknown_person_throws(): void
+    {
+        Http::fake([
+            'https://tareef.test/api/v1/verify' => Http::response([
+                'success' => false, 'status' => 'person_not_found',
+                'message' => 'No person with that identifier in this application.',
+            ], 404),
+        ]);
+
+        $this->expectException(PersonNotFoundException::class);
+        Tareef::verify(UploadedFile::fake()->image('selfie.jpg'), 'nope');
+    }
+
     public function test_compare_returns_result(): void
     {
         Http::fake([

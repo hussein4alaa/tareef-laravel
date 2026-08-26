@@ -15,7 +15,7 @@ use Tareef\Laravel\Resources\VerifyResult;
  * @method static Person        findOrFail(string $uuid)
  * @method static \Illuminate\Support\Collection list(int $limit = 100)
  * @method static bool          delete(string $uuid)
- * @method static VerifyResult  verify(\Illuminate\Http\UploadedFile|\SplFileInfo|string $image)
+ * @method static VerifyResult  verify(\Illuminate\Http\UploadedFile|\SplFileInfo|string $image, ?string $personUuid = null)
  * @method static CompareResult compare(\Illuminate\Http\UploadedFile|\SplFileInfo|string $imageA, \Illuminate\Http\UploadedFile|\SplFileInfo|string $imageB)
  *
  * @see \Tareef\Laravel\TareefClient

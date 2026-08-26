@@ -78,6 +78,54 @@ if ($result->matched) {
 return view('door.unknown');
 ```
 
+### Verify against one known person (1:1 identity check)
+
+When you already know who the photo is supposed to be, pass their UUID.
+The image is then scored **only** against that person's own reference
+photos — "is this really them?" instead of "who is this?".
+
+```php
+$result = Tareef::verify($request->file('selfie'), $user->tareef_uuid);
+
+if ($result->matched) {
+    return response()->json(['verified' => true, 'score' => $result->score]);
+}
+
+return response()->json([
+    'verified' => false,
+    'reason'   => $result->status,   // not_identical | no_images | no_face
+], 401);
+```
+
+Or fluently, from a `Person`:
+
+```php
+$person = Tareef::findOrFail($user->tareef_uuid);
+
+if ($person->verify($request->file('selfie'))->matched) {
+    // …
+}
+```
+
+Two reasons to prefer this over a library-wide search when you know the
+identity:
+
+- **It's more forgiving.** A query only has to resemble *one* of that
+  person's photos, so glasses on/off and lighting changes matter less than
+  they do when competing against everyone else in your library.
+- **It can't return the wrong person.** There is exactly one candidate.
+
+Enroll each person in more than one condition (with and without glasses,
+different lighting) to get the most out of it — extra reference photos
+raise the hit rate rather than diluting it.
+
+An unknown `$personUuid` throws `PersonNotFoundException`; a genuine
+no-match does not throw.
+
+> Checking a selfie against an ID photo you were handed, with nobody
+> enrolled? That's [`Tareef::compare()`](#compare-two-faces-11) instead —
+> it compares two images directly and never touches your library.
+
 ### Compare two faces (1:1)
 
 Measure how similar two images are without enrolling anyone — ideal for KYC
@@ -164,14 +212,14 @@ try {
 }
 ```
 
-`Tareef::verify()` and `Tareef::compare()` are different: a no-match is **not** an exception — they return a result object with `matched`/`match` set to `false`. Only auth, quota, "no face in the image", and network errors throw.
+`Tareef::verify()` and `Tareef::compare()` are different: a no-match is **not** an exception — they return a result object with `matched`/`match` set to `false`. Only auth, quota, "no face in the image", an unknown `$personUuid`, and network errors throw.
 
 ## API reference
 
 | Call | Returns | Throws on … |
 |------|---------|-------------|
 | `Tareef::register($name, $images, $phone?)` | `Person` | duplicate face, no face, auth, quota |
-| `Tareef::verify($image)` | `VerifyResult` | no face, auth, quota, network |
+| `Tareef::verify($image, $personUuid?)` | `VerifyResult` | no face, unknown person, auth, quota, network |
 | `Tareef::compare($imageA, $imageB)` | `CompareResult` | no face, auth, quota, network |
 | `Tareef::find($uuid)` | `?Person` (null = not found) | auth |
 | `Tareef::findOrFail($uuid)` | `Person` | not found, auth |
@@ -191,6 +239,7 @@ $person->images;        // string[]  — URLs/paths returned by the API
 $person->createdAt;     // ?Carbon\Carbon
 
 $person->addImages([$file]);   // → Person
+$person->verify($file);        // → VerifyResult  (1:1 against this person)
 $person->delete();             // → bool
 $person->toArray();            // → array
 ```
@@ -203,9 +252,26 @@ $result->uuid;          // ?string (the matched person's UUID, if any)
 $result->name;          // ?string
 $result->score;         // ?float  (lower = closer; <0.35 = confident match)
 $result->samples;       // ?int    (how many reference photos contributed)
-$result->status;        // 'ok' | 'not_found'
+$result->status;        // see below
 $result->message;       // ?string
+$result->personUuid;    // ?string (set when you verified against one person)
+$result->lowQualityImage; // bool  (the query photo was small or soft)
+
+$result->wasScopedToPerson();   // bool — was this a 1:1 check?
 ```
+
+`status` values:
+
+| status | meaning |
+|--------|---------|
+| `ok` | matched |
+| `not_found` | 1:N — nobody in the library matched |
+| `not_identical` | 1:1 — a face was read, but it isn't that person |
+| `no_images` | 1:1 — that person has no reference photos yet |
+
+When a match you expected comes back `not_identical`, check
+`lowQualityImage` first: if it's `true`, the query photo (not the
+enrollment) was the weak link.
 
 ### `CompareResult`
 
